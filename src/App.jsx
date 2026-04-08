@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import './App.css'
 import { supabase } from './supabase'
 
-const TABS = ['Network', 'Terrain']
+const TABS = ['Network', 'Terrain', 'Social']
 const STATUS_ORDER = ['To reach', 'Reached out', 'Replied', 'Meeting', 'Following up', 'Pass']
 const ALL_FILTERS = ['All', ...STATUS_ORDER]
 const STAGE_OPTIONS = ['Pre-seed', 'Seed', 'Series A', 'Growth']
@@ -32,7 +32,7 @@ function App() {
   return (
     <div className="app-shell">
       <nav className="top-nav">
-        <div className="brand">Terrain</div>
+        <div className="brand">Sparring Partner</div>
         <div className="tab-list">
           {TABS.map((tab) => (
             <button key={tab} className={`tab-btn ${activeTab === tab ? 'active' : ''}`}
@@ -42,6 +42,7 @@ function App() {
       </nav>
       {activeTab === 'Network' && <OutreachTab />}
       {activeTab === 'Terrain' && <TerrainTab />}
+      {activeTab === 'Social' && <SocialTab />}
     </div>
   )
 }
@@ -1889,5 +1890,308 @@ function intelCategoryClass(category) {
   return 'intel-cat-general'
 }
 
+
+
+// ─── Social Tab ────────────────────────────────────────────────
+const POST_THEMES = ['Consumer', 'Consumer AI', 'EU/US Lens', 'VC Mechanics', 'Building', 'Market Signal']
+const POST_STATUSES = ['Draft', 'Scheduled', 'Posted']
+const STATUS_FILTERS = ['All', ...POST_STATUSES]
+
+const initialPostForm = {
+  title: '',
+  content: '',
+  theme: 'Consumer',
+  status: 'Draft',
+  scheduled_date: '',
+  link_url: '',
+  notes: '',
+}
+
+function postStatusClass(status) {
+  if (status === 'Posted') return 'post-status-posted'
+  if (status === 'Scheduled') return 'post-status-scheduled'
+  return 'post-status-draft'
+}
+
+function themeClass(theme) {
+  const map = {
+    'Consumer': 'theme-consumer',
+    'Consumer AI': 'theme-consumer-ai',
+    'EU/US Lens': 'theme-eu-us',
+    'VC Mechanics': 'theme-vc',
+    'Building': 'theme-building',
+    'Market Signal': 'theme-signal',
+  }
+  return map[theme] || 'theme-consumer'
+}
+
+function SocialTab() {
+  const [posts, setPosts] = useState([])
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState('')
+  const [filter, setFilter] = useState('All')
+  const [modalOpen, setModalOpen] = useState(false)
+  const [editing, setEditing] = useState(null)
+  const [form, setForm] = useState(initialPostForm)
+  const [expandedIds, setExpandedIds] = useState([])
+  const [flashMessage, setFlashMessage] = useState('')
+  const [copyDone, setCopyDone] = useState(null)
+
+  useEffect(() => { fetchPosts() }, [])
+
+  useEffect(() => {
+    if (!flashMessage) return undefined
+    const t = setTimeout(() => setFlashMessage(''), 2500)
+    return () => clearTimeout(t)
+  }, [flashMessage])
+
+  const stats = useMemo(() => {
+    return {
+      total: posts.length,
+      draft: posts.filter(p => p.status === 'Draft').length,
+      scheduled: posts.filter(p => p.status === 'Scheduled').length,
+      posted: posts.filter(p => p.status === 'Posted').length,
+    }
+  }, [posts])
+
+  const filteredPosts = useMemo(() => {
+    const base = filter === 'All' ? posts : posts.filter(p => p.status === filter)
+    return [...base].sort((a, b) => {
+      if (a.scheduled_date && b.scheduled_date) return a.scheduled_date.localeCompare(b.scheduled_date)
+      if (a.scheduled_date) return -1
+      if (b.scheduled_date) return 1
+      return new Date(b.created_at) - new Date(a.created_at)
+    })
+  }, [posts, filter])
+
+  async function fetchPosts() {
+    setLoading(true)
+    setError('')
+    const { data, error: err } = await supabase
+      .from('linkedin_posts')
+      .select('*')
+      .order('created_at', { ascending: false })
+    if (err) { setError(err.message); setLoading(false); return }
+    setPosts(data || [])
+    setLoading(false)
+  }
+
+  function openAdd() {
+    setEditing(null)
+    setForm(initialPostForm)
+    setModalOpen(true)
+  }
+
+  function openEdit(post) {
+    setEditing(post)
+    setForm({
+      title: post.title || '',
+      content: post.content || '',
+      theme: post.theme || 'Consumer',
+      status: post.status || 'Draft',
+      scheduled_date: post.scheduled_date || '',
+      link_url: post.link_url || '',
+      notes: post.notes || '',
+    })
+    setModalOpen(true)
+  }
+
+  async function handleSave(e) {
+    e.preventDefault()
+    if (!form.content.trim()) return
+    const payload = {
+      title: form.title.trim() || null,
+      content: form.content.trim(),
+      theme: form.theme,
+      status: form.status,
+      scheduled_date: form.scheduled_date || null,
+      link_url: form.link_url.trim() || null,
+      notes: form.notes.trim() || null,
+      posted_at: form.status === 'Posted' && !editing?.posted_at ? new Date().toISOString() : (editing?.posted_at || null),
+    }
+    const q = editing
+      ? supabase.from('linkedin_posts').update(payload).eq('id', editing.id)
+      : supabase.from('linkedin_posts').insert(payload)
+    const { error: err } = await q
+    if (err) { setError(err.message); return }
+    setModalOpen(false)
+    setEditing(null)
+    setForm(initialPostForm)
+    await fetchPosts()
+    setFlashMessage(editing ? 'Post updated.' : 'Post saved.')
+  }
+
+  async function handleDelete() {
+    if (!editing) return
+    await supabase.from('linkedin_posts').delete().eq('id', editing.id)
+    setModalOpen(false)
+    setEditing(null)
+    await fetchPosts()
+    setFlashMessage('Post deleted.')
+  }
+
+  async function markPosted(post) {
+    await supabase.from('linkedin_posts').update({ status: 'Posted', posted_at: new Date().toISOString() }).eq('id', post.id)
+    await fetchPosts()
+    setFlashMessage('Marked as posted!')
+  }
+
+  async function copyContent(post) {
+    await navigator.clipboard.writeText(post.content)
+    setCopyDone(post.id)
+    setTimeout(() => setCopyDone(null), 1500)
+  }
+
+  function toggleExpand(id) {
+    setExpandedIds(prev => prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id])
+  }
+
+  return (
+    <section className="outreach-wrap">
+      <div className="outreach-header">
+        <h1>Social · LinkedIn</h1>
+        <button className="btn btn-dark" onClick={openAdd} type="button">+ New post</button>
+      </div>
+
+      <div className="stats-grid">
+        <StatCard label="Total posts" value={stats.total} />
+        <StatCard label="Drafts" value={stats.draft} />
+        <StatCard label="Scheduled" value={stats.scheduled} />
+        <StatCard label="Posted" value={stats.posted} />
+      </div>
+
+      <div className="filter-row">
+        {STATUS_FILTERS.map(s => (
+          <button key={s} className={`filter-pill ${filter === s ? 'active' : ''}`}
+            onClick={() => setFilter(s)} type="button">{s}</button>
+        ))}
+      </div>
+
+      {flashMessage && <div className="flash-message">{flashMessage}</div>}
+
+      {loading ? (
+        <div className="state-card">Loading...</div>
+      ) : error ? (
+        <div className="state-card error">{error}</div>
+      ) : filteredPosts.length === 0 ? (
+        <div className="state-card">No posts yet. Add your first LinkedIn post.</div>
+      ) : (
+        <div className="social-post-list">
+          {filteredPosts.map(post => {
+            const expanded = expandedIds.includes(post.id)
+            const isLong = post.content.length > 220
+            return (
+              <article key={post.id} className="social-post-card">
+                <div className="social-post-header">
+                  <div className="social-post-meta">
+                    <span className={`type-badge ${themeClass(post.theme)}`}>{post.theme}</span>
+                    <span className={`status-badge ${postStatusClass(post.status)}`}>
+                      <span className="dot" />{post.status}
+                    </span>
+                    {post.scheduled_date && (
+                      <span className="social-date">
+                        {new Date(`${post.scheduled_date}T00:00:00`).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}
+                      </span>
+                    )}
+                  </div>
+                  <div className="social-post-actions">
+                    {post.status !== 'Posted' && (
+                      <button className="btn btn-light" onClick={() => markPosted(post)} type="button">Mark posted</button>
+                    )}
+                    <button className="btn btn-light" onClick={() => copyContent(post)} type="button">
+                      {copyDone === post.id ? '✓ Copied' : 'Copy'}
+                    </button>
+                    <button className="icon-btn" onClick={() => openEdit(post)} type="button" aria-label="Edit post">
+                      <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                        <path d="M4 20h4l10.5-10.5a1.4 1.4 0 0 0 0-2L16.5 5.5a1.4 1.4 0 0 0-2 0L4 16v4Z" stroke="currentColor" strokeWidth="1.5" />
+                      </svg>
+                    </button>
+                  </div>
+                </div>
+                {post.title && <div className="social-post-title">{post.title}</div>}
+                <div className="social-post-content">
+                  {isLong && !expanded ? post.content.slice(0, 220) + '…' : post.content}
+                  {isLong && (
+                    <button className="intel-expand-btn" onClick={() => toggleExpand(post.id)} type="button">
+                      {expanded ? ' less' : ' more'}
+                    </button>
+                  )}
+                </div>
+                {post.link_url && (
+                  <a href={post.link_url} target="_blank" rel="noopener noreferrer" className="social-link">
+                    Linked article →
+                  </a>
+                )}
+                {post.notes && <div className="social-post-notes">{post.notes}</div>}
+              </article>
+            )
+          })}
+        </div>
+      )}
+
+      {modalOpen && (
+        <div className="modal-overlay" onClick={() => setModalOpen(false)}>
+          <div className="modal-card" onClick={e => e.stopPropagation()} role="dialog" aria-modal="true">
+            <h3>{editing ? 'Edit post' : 'New LinkedIn post'}</h3>
+            <form onSubmit={handleSave}>
+              <div className="modal-grid">
+                <label className="full-width">
+                  Title (optional)
+                  <input type="text" value={form.title}
+                    onChange={e => setForm(f => ({ ...f, title: e.target.value }))}
+                    placeholder="e.g. Consumer AI community post" />
+                </label>
+                <label className="full-width">
+                  Content *
+                  <textarea rows="8" required value={form.content}
+                    onChange={e => setForm(f => ({ ...f, content: e.target.value }))}
+                    placeholder="Write your LinkedIn post here..." />
+                </label>
+                <label>
+                  Theme
+                  <select value={form.theme} onChange={e => setForm(f => ({ ...f, theme: e.target.value }))}>
+                    {POST_THEMES.map(t => <option key={t} value={t}>{t}</option>)}
+                  </select>
+                </label>
+                <label>
+                  Status
+                  <select value={form.status} onChange={e => setForm(f => ({ ...f, status: e.target.value }))}>
+                    {POST_STATUSES.map(s => <option key={s} value={s}>{s}</option>)}
+                  </select>
+                </label>
+                <label>
+                  Scheduled date
+                  <input type="date" value={form.scheduled_date}
+                    onChange={e => setForm(f => ({ ...f, scheduled_date: e.target.value }))} />
+                </label>
+                <label>
+                  Linked article URL
+                  <input type="url" value={form.link_url}
+                    onChange={e => setForm(f => ({ ...f, link_url: e.target.value }))}
+                    placeholder="https://..." />
+                </label>
+                <label className="full-width">
+                  Notes
+                  <textarea rows="2" value={form.notes}
+                    onChange={e => setForm(f => ({ ...f, notes: e.target.value }))}
+                    placeholder="Private notes, context, ideas..." />
+                </label>
+              </div>
+              <div className="modal-actions">
+                {editing && (
+                  <button className="btn btn-danger" onClick={handleDelete} type="button">Delete</button>
+                )}
+                <div className="modal-actions-right">
+                  <button className="btn btn-light" onClick={() => setModalOpen(false)} type="button">Cancel</button>
+                  <button className="btn btn-dark" type="submit">Save</button>
+                </div>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+    </section>
+  )
+}
 
 export default App
